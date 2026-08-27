@@ -7,10 +7,10 @@
 #define WIFI_PASSWORD "your_wifi_password"
 
 #define WIFI_USE_STATIC_IP 1
-#define WIFI_LOCAL_IP IPAddress(192, 168, 10, 140)
-#define WIFI_GATEWAY IPAddress(192, 168, 10, 1)
+#define WIFI_LOCAL_IP IPAddress(192, 168, 1, 140)
+#define WIFI_GATEWAY IPAddress(192, 168, 1, 1)
 #define WIFI_SUBNET IPAddress(255, 255, 255, 0)
-#define WIFI_DNS1 IPAddress(192, 168, 10, 1)
+#define WIFI_DNS1 IPAddress(192, 168, 1, 1)
 #define WIFI_DNS2 IPAddress(8, 8, 8, 8)
 
 // OTA target will be cnc-laser-esp32.local if mDNS works on your network.

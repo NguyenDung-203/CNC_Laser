@@ -2,12 +2,42 @@
 #include <ArduinoOTA.h>
 #include <DNSServer.h>
 #include <FS.h>
-#include <LovyanGFX.hpp>
 #include <Preferences.h>
 #include <SPIFFS.h>
+#include <Update.h>
 #include <WebServer.h>
 #include <WiFi.h>
 #include <stdlib.h>
+
+#ifndef BOARD_ESP32C6_SUPERMINI
+#define BOARD_ESP32C6_SUPERMINI 0
+#endif
+
+#ifndef HAS_LCD_UI
+#if (BOARD_ESP32C6_SUPERMINI != 0)
+#define HAS_LCD_UI 0
+#else
+#define HAS_LCD_UI 1
+#endif
+#endif
+
+#ifndef RGB_STATUS_LED_PIN
+#if (BOARD_ESP32C6_SUPERMINI != 0)
+#define RGB_STATUS_LED_PIN 8
+#else
+#define RGB_STATUS_LED_PIN -1
+#endif
+#endif
+
+#if (RGB_STATUS_LED_PIN >= 0)
+#define HAS_RGB_STATUS_LED 1
+#else
+#define HAS_RGB_STATUS_LED 0
+#endif
+
+#if (HAS_LCD_UI != 0)
+#include <LovyanGFX.hpp>
+#endif
 
 #if __has_include("wifi_config.h")
 #include "wifi_config.h"
@@ -77,6 +107,25 @@
 #define CONFIG_AP_PASSWORD "cnclaser"
 #endif
 
+#ifndef WIFI_RESET_BUTTON_PIN
+#if (BOARD_ESP32C6_SUPERMINI != 0)
+#define WIFI_RESET_BUTTON_PIN 9
+#else
+#define WIFI_RESET_BUTTON_PIN -1
+#endif
+#endif
+
+#ifndef WIFI_RESET_HOLD_MS
+#define WIFI_RESET_HOLD_MS 3000UL
+#endif
+
+#if (WIFI_RESET_BUTTON_PIN >= 0)
+#define HAS_WIFI_RESET_BUTTON 1
+#else
+#define HAS_WIFI_RESET_BUTTON 0
+#endif
+
+#if (HAS_LCD_UI != 0)
 class LGFX : public lgfx::LGFX_Device
 {
   lgfx::Panel_ILI9341 panel;
@@ -152,10 +201,28 @@ public:
     setPanel(&panel);
   }
 };
+#endif
 
-static const int STM32_UART_RX_PIN = 16;
-static const int STM32_UART_TX_PIN = 17;
+#ifndef STM32_UART_RX_GPIO
+#define STM32_UART_RX_GPIO 16
+#endif
+
+#ifndef STM32_UART_TX_GPIO
+#define STM32_UART_TX_GPIO 17
+#endif
+
+static const int STM32_UART_RX_PIN = STM32_UART_RX_GPIO;
+static const int STM32_UART_TX_PIN = STM32_UART_TX_GPIO;
+#if (BOARD_ESP32C6_SUPERMINI != 0)
+static HardwareSerial stm32_uart(1);
+#else
+static HardwareSerial stm32_uart(2);
+#endif
+#if (HAS_LCD_UI != 0)
 static const int LCD_BACKLIGHT_PIN = 21;
+#else
+static const int LCD_BACKLIGHT_PIN = -1;
+#endif
 static const uint32_t DEBUG_BAUD = 115200;
 static const size_t BRIDGE_BUF_SIZE = 128;
 static const size_t GCODE_LINE_BUF_SIZE = 96;
@@ -187,6 +254,7 @@ enum GcodeJobState
   JOB_STOPPED
 };
 
+#if (HAS_LCD_UI != 0)
 enum LcdAction : uint8_t
 {
   LCD_ACT_NONE = 0,
@@ -237,12 +305,15 @@ static const LcdButton LCD_BUTTONS[] = {
     {210, 190, 96, 34, "STOP", LCD_ACT_STOP, UI_DANGER},
 };
 static const size_t LCD_BUTTON_COUNT = sizeof(LCD_BUTTONS) / sizeof(LCD_BUTTONS[0]);
+#endif
 
 static WiFiServer telnet_server(TELNET_PORT);
 static WiFiClient telnet_client;
 static WebServer http_server(HTTP_PORT);
 static DNSServer dns_server;
+#if (HAS_LCD_UI != 0)
 static LGFX lcd;
+#endif
 static File upload_file;
 static File job_file;
 static bool network_services_started = false;
@@ -250,6 +321,16 @@ static bool config_ap_active = false;
 static bool fs_ready = false;
 static bool upload_failed = false;
 static bool firmware_upload_failed = false;
+static bool esp32_ota_failed = false;
+static size_t esp32_ota_written = 0;
+static String esp32_ota_message = "idle";
+static bool rgb_status_led_ready = false;
+static uint8_t rgb_status_r = 0;
+static uint8_t rgb_status_g = 0;
+static uint8_t rgb_status_b = 0;
+static uint32_t last_rgb_status_ms = 0;
+static bool ota_update_active = false;
+static int ota_last_logged_percent = -1;
 static uint32_t last_wifi_attempt_ms = 0;
 static GcodeJobState job_state = JOB_IDLE;
 static char job_line_buf[GCODE_LINE_BUF_SIZE];
@@ -275,18 +356,28 @@ static uint32_t last_lcd_draw_ms = 0;
 static uint32_t last_touch_ms = 0;
 static String wifi_ssid = WIFI_SSID;
 static String wifi_password = WIFI_PASSWORD;
+static bool wifi_force_setup_portal = false;
 static bool wifi_use_static_ip = (WIFI_USE_STATIC_IP != 0);
 static IPAddress wifi_local_ip = WIFI_LOCAL_IP;
 static IPAddress wifi_gateway = WIFI_GATEWAY;
 static IPAddress wifi_subnet = WIFI_SUBNET;
 static IPAddress wifi_dns1 = WIFI_DNS1;
 static IPAddress wifi_dns2 = WIFI_DNS2;
+static bool wifi_reset_button_was_down = false;
+static bool wifi_reset_button_triggered = false;
+static uint32_t wifi_reset_button_down_ms = 0;
 
 static void logLine(const String &line);
 static void loadWifiSettings(void);
 static void saveWifiSettings(void);
-static void clearWifiSettings(void);
+static void clearWifiSettings(bool force_setup_portal);
 static bool parseIpSetting(const String &text, IPAddress *out);
+static bool isStaConnected(void);
+static bool isConfigOnlyMode(void);
+static bool requireStaModeForMachine(void);
+static void setupWifiResetButton(void);
+static void wifiResetButtonTask(void);
+static void clearWifiByButton(void);
 static bool connectStaWifi(void);
 static void startConfigAp(void);
 static void stopConfigAp(void);
@@ -322,6 +413,10 @@ static void handleGcodeUploadData(void);
 static void handleFirmwarePage(void);
 static void handleFirmwareUploadDone(void);
 static void handleFirmwareUploadData(void);
+static void handleEsp32OtaPage(void);
+static void handleEsp32OtaUploadDone(void);
+static void handleEsp32OtaUploadData(void);
+static void prepareEsp32OtaUpdate(const char *source);
 static bool startGcodeJob(void);
 static bool startGcodeJobFromPath(const char *path, const String &message);
 static bool writeManualJob(const String &content);
@@ -352,22 +447,30 @@ static bool waitStm32FirmwareLine(String &line, uint32_t timeout_ms);
 static bool waitStm32FirmwareContains(const char *pattern, uint32_t timeout_ms);
 static bool waitStm32Bootloader(void);
 static bool parseNextRequest(const String &line, uint32_t *offset, uint32_t *len);
+static void setupStatusLed(void);
+static void statusLedTask(void);
+static void setStatusRgb(uint8_t r, uint8_t g, uint8_t b);
 static void setupLcdUi(void);
 static void lcdUiTask(void);
 static void drawLcdUi(bool force);
+#if (HAS_LCD_UI != 0)
 static void drawLcdButton(int16_t x, int16_t y, int16_t w, int16_t h, const char *label, uint16_t color, uint16_t text_color);
 static void handleLcdTouch(void);
 static void runLcdAction(uint8_t action);
+#endif
 
 void setup()
 {
   Serial.begin(DEBUG_BAUD);
-  Serial2.begin(DEBUG_BAUD, SERIAL_8N1, STM32_UART_RX_PIN, STM32_UART_TX_PIN);
+  stm32_uart.begin(DEBUG_BAUD, SERIAL_8N1, STM32_UART_RX_PIN, STM32_UART_TX_PIN);
   delay(300);
+  setupStatusLed();
+  setupWifiResetButton();
 
   logLine("");
-  logLine("ESP32 CNC Laser bridge boot");
-  logLine("UART2: GPIO17 TX -> STM32 PB7 RXD, GPIO16 RX <- STM32 PB6 TXD");
+  logLine(BOARD_ESP32C6_SUPERMINI != 0 ? "ESP32-C6 CNC Laser bridge boot" : "ESP32 CNC Laser bridge boot");
+  logLine(String("STM32 UART: GPIO") + STM32_UART_TX_PIN + " TX -> STM32 RX, GPIO" +
+          STM32_UART_RX_PIN + " RX <- STM32 TX");
 
   setupLcdUi();
   loadWifiSettings();
@@ -378,7 +481,8 @@ void setup()
   startNetworkServices();
   printNetworkInfo();
   lcd_dirty = true;
-  logLine("Bridge ready: USB Serial + Telnet <-> STM32 UART");
+  logLine(isConfigOnlyMode() ? "Bridge ready: USB Serial <-> STM32 UART, WiFi config portal only"
+                             : "Bridge ready: USB Serial + Telnet <-> STM32 UART");
 }
 
 void loop()
@@ -390,15 +494,20 @@ void loop()
   }
   if (network_services_started)
   {
-    ArduinoOTA.handle();
     http_server.handleClient();
-    handleTelnetClient();
-    bridgeTelnetToStm32();
+    if (!isConfigOnlyMode())
+    {
+      ArduinoOTA.handle();
+      handleTelnetClient();
+      bridgeTelnetToStm32();
+    }
   }
   bridgeUsbToStm32();
   bridgeStm32ToOutputs();
   gcodeJobTask();
   lcdUiTask();
+  statusLedTask();
+  wifiResetButtonTask();
 }
 
 static void logLine(const String &line)
@@ -415,13 +524,23 @@ static void loadWifiSettings(void)
   Preferences prefs;
   String saved_ssid;
 
-  if (!prefs.begin("wifi", true))
+  if (!prefs.begin("wifi", false))
   {
     logLine("WiFi prefs open failed, using build defaults");
     return;
   }
 
-  saved_ssid = prefs.getString("ssid", "");
+  wifi_force_setup_portal = prefs.getBool("force_portal", false);
+  if (wifi_force_setup_portal)
+  {
+    wifi_ssid = "";
+    wifi_password = "";
+    logLine("WiFi setup portal forced by reset button/clear request");
+    prefs.end();
+    return;
+  }
+
+  saved_ssid = prefs.isKey("ssid") ? prefs.getString("ssid", "") : "";
   if (saved_ssid.length() > 0)
   {
     wifi_ssid = saved_ssid;
@@ -460,18 +579,28 @@ static void saveWifiSettings(void)
   prefs.putString("subnet", wifi_subnet.toString());
   prefs.putString("dns1", wifi_dns1.toString());
   prefs.putString("dns2", wifi_dns2.toString());
+  prefs.putBool("force_portal", false);
   prefs.end();
+  wifi_force_setup_portal = false;
 }
 
-static void clearWifiSettings(void)
+static void clearWifiSettings(bool force_setup_portal)
 {
   Preferences prefs;
 
   if (prefs.begin("wifi", false))
   {
     prefs.clear();
+    if (force_setup_portal)
+    {
+      prefs.putBool("force_portal", true);
+    }
     prefs.end();
   }
+
+  wifi_force_setup_portal = force_setup_portal;
+  wifi_ssid = "";
+  wifi_password = "";
 }
 
 static bool parseIpSetting(const String &text, IPAddress *out)
@@ -491,6 +620,79 @@ static bool parseIpSetting(const String &text, IPAddress *out)
   return true;
 }
 
+static bool isStaConnected(void)
+{
+  return WiFi.status() == WL_CONNECTED;
+}
+
+static bool isConfigOnlyMode(void)
+{
+  return config_ap_active && !isStaConnected();
+}
+
+static bool requireStaModeForMachine(void)
+{
+  if (!isConfigOnlyMode())
+  {
+    return true;
+  }
+
+  http_server.sendHeader("Cache-Control", "no-store");
+  http_server.send(503, "text/plain",
+                   "config AP only: save WiFi settings, reconnect ESP32 to STA WiFi, then use CNC console\n");
+  return false;
+}
+
+static void setupWifiResetButton(void)
+{
+#if (HAS_WIFI_RESET_BUTTON != 0)
+  pinMode(WIFI_RESET_BUTTON_PIN, INPUT_PULLUP);
+#endif
+}
+
+static void wifiResetButtonTask(void)
+{
+#if (HAS_WIFI_RESET_BUTTON != 0)
+  const uint32_t now_ms = millis();
+  const bool button_down = digitalRead(WIFI_RESET_BUTTON_PIN) == LOW;
+
+  if (!button_down)
+  {
+    wifi_reset_button_was_down = false;
+    wifi_reset_button_triggered = false;
+    return;
+  }
+
+  if (!wifi_reset_button_was_down)
+  {
+    wifi_reset_button_was_down = true;
+    wifi_reset_button_triggered = false;
+    wifi_reset_button_down_ms = now_ms;
+    return;
+  }
+
+  if (!wifi_reset_button_triggered && ((now_ms - wifi_reset_button_down_ms) >= WIFI_RESET_HOLD_MS))
+  {
+    wifi_reset_button_triggered = true;
+    clearWifiByButton();
+  }
+#endif
+}
+
+static void clearWifiByButton(void)
+{
+  logLine("BOOT held 3s: clearing saved WiFi and restarting in config portal");
+  clearWifiSettings(true);
+  if (isJobRunning())
+  {
+    stm32_uart.print("!\n");
+    stopGcodeJob(JOB_STOPPED, "stopped: WiFi reset button");
+  }
+  setStatusRgb(32, 0, 32);
+  delay(600);
+  ESP.restart();
+}
+
 static bool connectStaWifi(void)
 {
   if (wifi_ssid.length() == 0)
@@ -500,6 +702,7 @@ static bool connectStaWifi(void)
   }
 
   WiFi.mode(config_ap_active ? WIFI_AP_STA : WIFI_STA);
+  WiFi.setSleep(false);
   WiFi.setHostname(OTA_HOSTNAME);
 
   if (wifi_use_static_ip)
@@ -563,6 +766,10 @@ static void startConfigAp(void)
   }
 
   config_ap_active = true;
+  if (!isStaConnected())
+  {
+    telnet_client.stop();
+  }
   last_wifi_attempt_ms = millis();
   dns_server.start(DNS_PORT, "*", CONFIG_AP_IP);
   logLine(String("Config AP ready: SSID=") + CONFIG_AP_SSID + " IP=" + WiFi.softAPIP().toString());
@@ -578,13 +785,19 @@ static void stopConfigAp(void)
   dns_server.stop();
   WiFi.softAPdisconnect(true);
   config_ap_active = false;
+  WiFi.mode(WIFI_STA);
 }
 
 static void handleWifi(void)
 {
   uint32_t retry_interval_ms = config_ap_active ? WIFI_CONFIG_AP_RETRY_MS : WIFI_RECONNECT_INTERVAL_MS;
 
-  if ((wifi_ssid.length() == 0) || (WiFi.status() == WL_CONNECTED))
+  if (isConfigOnlyMode())
+  {
+    return;
+  }
+
+  if ((wifi_ssid.length() == 0) || isStaConnected())
   {
     return;
   }
@@ -615,31 +828,48 @@ static void startNetworkServices(void)
     return;
   }
 
-  setupOta();
-  setupTelnet();
   setupHttp();
+  if (!isConfigOnlyMode())
+  {
+    setupOta();
+    setupTelnet();
+  }
+  else
+  {
+    logLine("STA-only console disabled while in config AP mode");
+  }
   network_services_started = true;
 }
 
 static void setupOta(void)
 {
   ArduinoOTA.setHostname(OTA_HOSTNAME);
+  ArduinoOTA.setTimeout(30000);
   if (strlen(OTA_PASSWORD) > 0)
   {
     ArduinoOTA.setPassword(OTA_PASSWORD);
   }
 
   ArduinoOTA.onStart([]() {
+    prepareEsp32OtaUpdate("ArduinoOTA");
     Serial.println("OTA start");
   });
   ArduinoOTA.onEnd([]() {
+    ota_update_active = false;
     Serial.println();
     Serial.println("OTA end");
   });
   ArduinoOTA.onProgress([](unsigned int progress, unsigned int total) {
-    Serial.printf("OTA progress: %u%%\r", (progress * 100U) / total);
+    int percent = (int)((progress * 100U) / total);
+    if ((percent != ota_last_logged_percent) && ((percent % 5) == 0))
+    {
+      ota_last_logged_percent = percent;
+      Serial.printf("OTA progress: %d%%\n", percent);
+    }
   });
   ArduinoOTA.onError([](ota_error_t error) {
+    ota_update_active = false;
+    setStatusRgb(32, 0, 0);
     Serial.printf("OTA error[%u]\n", error);
   });
 
@@ -679,9 +909,18 @@ static void setupHttp(void)
   http_server.on("/upload", HTTP_POST, handleGcodeUploadDone, handleGcodeUploadData);
   http_server.on("/firmware", HTTP_GET, handleFirmwarePage);
   http_server.on("/fw-upload", HTTP_POST, handleFirmwareUploadDone, handleFirmwareUploadData);
+  http_server.on("/esp32-ota", HTTP_GET, handleEsp32OtaPage);
+  http_server.on("/esp32-ota", HTTP_POST, handleEsp32OtaUploadDone, handleEsp32OtaUploadData);
   http_server.onNotFound(handleNotFound);
   http_server.begin();
-  logLine(String("HTTP upload ready: http://") + WiFi.localIP().toString() + "/");
+  if (isConfigOnlyMode())
+  {
+    logLine(String("HTTP config portal ready: http://") + WiFi.softAPIP().toString() + "/wifi");
+  }
+  else
+  {
+    logLine(String("HTTP upload ready: http://") + WiFi.localIP().toString() + "/");
+  }
 }
 
 static void handleTelnetClient(void)
@@ -718,7 +957,7 @@ static void bridgeUsbToStm32(void)
 
   if (len > 0)
   {
-    Serial2.write(buf, len);
+    stm32_uart.write(buf, len);
   }
 }
 
@@ -739,7 +978,7 @@ static void bridgeTelnetToStm32(void)
 
   if (len > 0)
   {
-    Serial2.write(buf, len);
+    stm32_uart.write(buf, len);
   }
 }
 
@@ -748,9 +987,9 @@ static void bridgeStm32ToOutputs(void)
   uint8_t buf[BRIDGE_BUF_SIZE];
   size_t len = 0;
 
-  while ((Serial2.available() > 0) && (len < sizeof(buf)))
+  while ((stm32_uart.available() > 0) && (len < sizeof(buf)))
   {
-    buf[len++] = (uint8_t)Serial2.read();
+    buf[len++] = (uint8_t)stm32_uart.read();
   }
 
   if (len > 0)
@@ -801,6 +1040,13 @@ static void printNetworkInfo(void)
 static void handleRoot(void)
 {
   String html;
+
+  if (isConfigOnlyMode())
+  {
+    http_server.sendHeader("Location", "/wifi", true);
+    http_server.send(302, "text/plain", "wifi setup\n");
+    return;
+  }
 
   html.reserve(14000);
   html += F("<!doctype html><html><head><meta charset='utf-8'>");
@@ -885,7 +1131,7 @@ static void handleWifiConfigPage(void)
   html += F("</style></head><body><main class='wrap'><div class='panel'>");
   html += F("<h1>WiFi Setup</h1><div class='sub'>Chon WiFi cho ESP32. Neu ket noi that bai, ESP32 se phat AP <code>");
   html += CONFIG_AP_SSID;
-  html += F("</code> tai <code>192.168.4.1</code>.</div>");
+  html += F("</code> tai <code>192.168.4.1</code>. AP nay chi dung de cau hinh WiFi, khong dung de upload/chay job.</div>");
   html += F("<p class='hint'>STA: ");
   html += WiFi.status() == WL_CONNECTED ? WiFi.localIP().toString() : String("not connected");
   html += F(" | AP: ");
@@ -905,12 +1151,17 @@ static void handleWifiConfigPage(void)
   WiFi.scanDelete();
 
   html += F("</datalist><label>Password</label><input name='pass' type='password' placeholder='De trong de giu mat khau cu neu SSID khong doi'>");
-  html += F("<label><input name='static' type='checkbox' value='1'");
+  html += F("<label>Kieu IP</label><div class='actions'><label><input name='static' type='radio' value='0'");
+  if (!wifi_use_static_ip)
+  {
+    html += F(" checked");
+  }
+  html += F(">DHCP tu router</label><label><input name='static' type='radio' value='1'");
   if (wifi_use_static_ip)
   {
     html += F(" checked");
   }
-  html += F(">Dung IP tinh</label><div class='grid'>");
+  html += F(">IP tinh</label></div><div class='grid'>");
   html += F("<div><label>IP</label><input name='ip' value='");
   html += wifi_local_ip.toString();
   html += F("'></div><div><label>Gateway</label><input name='gw' value='");
@@ -921,7 +1172,12 @@ static void handleWifiConfigPage(void)
   html += wifi_dns1.toString();
   html += F("'></div><div><label>DNS 2</label><input name='dns2' value='");
   html += wifi_dns2.toString();
-  html += F("'></div></div><div class='actions'><button class='primary' type='submit'>Save & Restart</button><a class='btn secondary' href='/'>Back</a></div></form>");
+  html += F("'></div></div><div class='actions'><button class='primary' type='submit'>Save & Restart</button>");
+  if (!isConfigOnlyMode())
+  {
+    html += F("<a class='btn secondary' href='/'>Back</a>");
+  }
+  html += F("</div></form>");
   html += F("<form method='post' action='/wifi-clear' class='actions'><button class='danger' type='submit'>Clear Saved WiFi</button></form>");
   html += F("</div></main></body></html>");
 
@@ -933,7 +1189,7 @@ static void handleWifiSave(void)
 {
   String new_ssid = http_server.arg("ssid");
   String new_pass = http_server.arg("pass");
-  bool new_static = http_server.hasArg("static");
+  bool new_static = http_server.hasArg("static") && (http_server.arg("static") == "1");
   IPAddress new_ip = wifi_local_ip;
   IPAddress new_gw = wifi_gateway;
   IPAddress new_subnet = wifi_subnet;
@@ -982,8 +1238,8 @@ static void handleWifiSave(void)
 
 static void handleWifiClear(void)
 {
-  clearWifiSettings();
-  http_server.send(200, "text/html", "<!doctype html><meta charset='utf-8'><p>Saved WiFi cleared. ESP32 restarting with build defaults...</p>");
+  clearWifiSettings(true);
+  http_server.send(200, "text/html", "<!doctype html><meta charset='utf-8'><p>Saved WiFi cleared. ESP32 restarting in setup portal...</p>");
   delay(700);
   ESP.restart();
 }
@@ -1038,7 +1294,7 @@ static void handleStatus(void)
 {
   String text;
 
-  text.reserve(420);
+  text.reserve(620);
   text += "state=";
   text += jobStateName(job_state);
   text += "\nmessage=";
@@ -1065,6 +1321,22 @@ static void handleStatus(void)
   text += lcd_ready ? "ready" : "not_ready";
   text += "\nbacklight_gpio=";
   text += LCD_BACKLIGHT_PIN;
+  text += "\nstm32_uart_rx_gpio=";
+  text += STM32_UART_RX_PIN;
+  text += "\nstm32_uart_tx_gpio=";
+  text += STM32_UART_TX_PIN;
+  text += "\nrgb_led=";
+  text += (HAS_RGB_STATUS_LED != 0) ? "enabled" : "disabled";
+  text += "\nrgb_led_gpio=";
+  text += RGB_STATUS_LED_PIN;
+  text += "\nwifi_reset_button_gpio=";
+  text += WIFI_RESET_BUTTON_PIN;
+  text += "\nwifi_force_setup=";
+  text += wifi_force_setup_portal ? "1" : "0";
+  text += "\nota_active=";
+  text += ota_update_active ? "1" : "0";
+  text += "\nesp32_ota=";
+  text += esp32_ota_message;
   text += "\nwifi_mode=";
   if (WiFi.status() == WL_CONNECTED)
   {
@@ -1099,7 +1371,12 @@ static void handleStatus(void)
 
 static void handleStop(void)
 {
-  Serial2.print("!\n");
+  if (!requireStaModeForMachine())
+  {
+    return;
+  }
+
+  stm32_uart.print("!\n");
   stopGcodeJob(JOB_STOPPED, "stopped from web");
   lcd_dirty = true;
   http_server.send(200, "text/plain", "stopped\n");
@@ -1109,6 +1386,11 @@ static void handleJog(void)
 {
   float x_mm = 0.0f;
   float y_mm = 0.0f;
+
+  if (!requireStaModeForMachine())
+  {
+    return;
+  }
 
   if (http_server.hasArg("x"))
   {
@@ -1134,6 +1416,11 @@ static void handleZJog(void)
   String dir = http_server.hasArg("dir") ? http_server.arg("dir") : "";
   dir.toLowerCase();
 
+  if (!requireStaModeForMachine())
+  {
+    return;
+  }
+
   if ((dir != "up") && (dir != "down"))
   {
     http_server.send(400, "text/plain", "bad z dir\n");
@@ -1152,6 +1439,11 @@ static void handleZJog(void)
 
 static void handleLaserWork(void)
 {
+  if (!requireStaModeForMachine())
+  {
+    return;
+  }
+
   if (!startManualLaserWork())
   {
     lcd_dirty = true;
@@ -1164,6 +1456,11 @@ static void handleLaserWork(void)
 
 static void handleLaserOff(void)
 {
+  if (!requireStaModeForMachine())
+  {
+    return;
+  }
+
   if (!startManualLaserOff())
   {
     lcd_dirty = true;
@@ -1176,6 +1473,11 @@ static void handleLaserOff(void)
 
 static void handleHomeCenter(void)
 {
+  if (!requireStaModeForMachine())
+  {
+    return;
+  }
+
   if (!startManualHomeCenter())
   {
     lcd_dirty = true;
@@ -1188,6 +1490,11 @@ static void handleHomeCenter(void)
 
 static void handleCenter(void)
 {
+  if (!requireStaModeForMachine())
+  {
+    return;
+  }
+
   if (!startManualCenter())
   {
     lcd_dirty = true;
@@ -1200,6 +1507,11 @@ static void handleCenter(void)
 
 static void handleRunLast(void)
 {
+  if (!requireStaModeForMachine())
+  {
+    return;
+  }
+
   if (!startLastUploadedJob())
   {
     lcd_dirty = true;
@@ -1212,6 +1524,12 @@ static void handleRunLast(void)
 
 static void handleLcdTest(void)
 {
+  if (!requireStaModeForMachine())
+  {
+    return;
+  }
+
+#if (HAS_LCD_UI != 0)
   pinMode(LCD_BACKLIGHT_PIN, OUTPUT);
   digitalWrite(LCD_BACKLIGHT_PIN, HIGH);
 
@@ -1231,6 +1549,18 @@ static void handleLcdTest(void)
   }
 
   http_server.send(200, "text/plain", "lcd test: GPIO21 HIGH, RGB pattern drawn\n");
+#elif (HAS_RGB_STATUS_LED != 0)
+  setStatusRgb(24, 0, 0);
+  delay(180);
+  setStatusRgb(0, 24, 0);
+  delay(180);
+  setStatusRgb(0, 0, 24);
+  delay(180);
+  setStatusRgb(0, 0, 0);
+  http_server.send(200, "text/plain", "rgb test: WS2812 GPIO8 pattern drawn\n");
+#else
+  http_server.send(200, "text/plain", "no LCD/RGB test output configured\n");
+#endif
 }
 
 static void handleGcodeUploadDone(void)
@@ -1238,6 +1568,16 @@ static void handleGcodeUploadDone(void)
   if (upload_file)
   {
     upload_file.close();
+  }
+
+  if (!requireStaModeForMachine())
+  {
+    if (fs_ready)
+    {
+      SPIFFS.remove(GCODE_UPLOAD_PATH);
+    }
+    upload_failed = false;
+    return;
   }
 
   if (upload_failed)
@@ -1260,6 +1600,13 @@ static void handleGcodeUploadDone(void)
 static void handleGcodeUploadData(void)
 {
   HTTPUpload &upload = http_server.upload();
+
+  if (isConfigOnlyMode())
+  {
+    upload_failed = true;
+    job_message = "config AP only: G-code upload disabled";
+    return;
+  }
 
   if (upload.status == UPLOAD_FILE_START)
   {
@@ -1328,6 +1675,11 @@ static void handleFirmwarePage(void)
 {
   String html;
 
+  if (!requireStaModeForMachine())
+  {
+    return;
+  }
+
   html.reserve(2600);
   html += F("<!doctype html><html><head><meta charset='utf-8'>");
   html += F("<meta name='viewport' content='width=device-width,initial-scale=1'>");
@@ -1361,6 +1713,16 @@ static void handleFirmwareUploadDone(void)
     upload_file.close();
   }
 
+  if (!requireStaModeForMachine())
+  {
+    if (fs_ready)
+    {
+      SPIFFS.remove(STM32_APP_UPLOAD_PATH);
+    }
+    firmware_upload_failed = false;
+    return;
+  }
+
   if (firmware_upload_failed)
   {
     http_server.send(500, "text/plain", firmware_message + "\n");
@@ -1379,6 +1741,13 @@ static void handleFirmwareUploadDone(void)
 static void handleFirmwareUploadData(void)
 {
   HTTPUpload &upload = http_server.upload();
+
+  if (isConfigOnlyMode())
+  {
+    firmware_upload_failed = true;
+    firmware_message = "config AP only: STM32 firmware upload disabled";
+    return;
+  }
 
   if (upload.status == UPLOAD_FILE_START)
   {
@@ -1441,6 +1810,155 @@ static void handleFirmwareUploadData(void)
     firmware_upload_failed = true;
     firmware_message = "firmware upload aborted";
   }
+}
+
+static void handleEsp32OtaPage(void)
+{
+  String html;
+
+  if (!requireStaModeForMachine())
+  {
+    return;
+  }
+
+  html.reserve(2200);
+  html += F("<!doctype html><html><head><meta charset='utf-8'>");
+  html += F("<meta name='viewport' content='width=device-width,initial-scale=1'>");
+  html += F("<title>ESP32 OTA</title>");
+  html += F("<style>");
+  html += F(":root{--ink:#18212f;--muted:#667085;--line:#d7dde8;--panel:#fff;--accent:#2563eb;--danger:#b42318;--bg:#f4f7fb}");
+  html += F("*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font-family:Inter,system-ui,-apple-system,Segoe UI,sans-serif}");
+  html += F(".wrap{max-width:760px;margin:0 auto;padding:24px 16px 36px}.panel{background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:18px;box-shadow:0 10px 24px rgba(25,36,64,.08)}");
+  html += F("h1{font-size:28px;margin:0 0 8px}.sub,.note{color:var(--muted);line-height:1.45}.warn{border-left:4px solid var(--danger);padding:10px 12px;background:#fff4f2;border-radius:4px;margin:14px 0}");
+  html += F("input{display:block;width:100%;padding:12px;border:1px solid var(--line);border-radius:8px;margin-top:14px;background:#fbfcff}");
+  html += F("button{appearance:none;border:0;border-radius:8px;padding:12px 14px;font-size:15px;font-weight:750;background:var(--accent);color:#fff;cursor:pointer;margin-top:14px}");
+  html += F("a{color:#2563eb;text-decoration:none;font-weight:700}pre{white-space:pre-wrap;word-break:break-word;background:#111827;color:#f9fafb;border-radius:8px;padding:12px;min-height:90px}");
+  html += F("</style></head><body><main class='wrap'><section class='panel'>");
+  html += F("<h1>ESP32 OTA</h1>");
+  html += F("<div class='sub'>Upload firmware.bin cua ESP32 qua WiFi chinh. AP fallback chi de cau hinh WiFi.</div>");
+  html += F("<div class='warn'>May se dung job hien tai neu co, ghi firmware moi, roi tu restart.</div>");
+  html += F("<form method='post' action='/esp32-ota' enctype='multipart/form-data'><input type='file' name='file' accept='.bin' required><button>Upload ESP32 firmware</button></form>");
+  html += F("<p class='note'>Dung file: tools/esp32_uart_bridge/.pio/build/esp32c6_supermini_ota/firmware.bin.</p>");
+  html += F("<pre>");
+  html += esp32_ota_message;
+  html += F("</pre><p><a href='/'>Back to G-code console</a> | <a href='/status'>Plain status</a></p>");
+  html += F("</section></main></body></html>");
+  http_server.sendHeader("Cache-Control", "no-store");
+  http_server.send(200, "text/html", html);
+}
+
+static void handleEsp32OtaUploadDone(void)
+{
+  if (!requireStaModeForMachine())
+  {
+    esp32_ota_failed = false;
+    ota_update_active = false;
+    return;
+  }
+
+  if (esp32_ota_failed)
+  {
+    ota_update_active = false;
+    http_server.send(500, "text/plain", esp32_ota_message + "\n");
+    return;
+  }
+
+  esp32_ota_message = String("ESP32 OTA complete, bytes=") + esp32_ota_written + ", restarting";
+  http_server.send(200, "text/plain", esp32_ota_message + "\n");
+  delay(700);
+  ESP.restart();
+}
+
+static void handleEsp32OtaUploadData(void)
+{
+  HTTPUpload &upload = http_server.upload();
+
+  if (isConfigOnlyMode())
+  {
+    esp32_ota_failed = true;
+    esp32_ota_message = "config AP only: ESP32 OTA disabled";
+    return;
+  }
+
+  if (upload.status == UPLOAD_FILE_START)
+  {
+    prepareEsp32OtaUpdate("HTTP");
+    esp32_ota_failed = false;
+    esp32_ota_written = 0;
+    esp32_ota_message = String("uploading ESP32 firmware ") + upload.filename;
+    if (!Update.begin(UPDATE_SIZE_UNKNOWN, U_FLASH))
+    {
+      esp32_ota_failed = true;
+      ota_update_active = false;
+      esp32_ota_message = String("ESP32 OTA begin failed: ") + Update.errorString();
+      logLine(esp32_ota_message);
+    }
+  }
+  else if (upload.status == UPLOAD_FILE_WRITE)
+  {
+    if (!esp32_ota_failed && (upload.currentSize > 0))
+    {
+      size_t written = Update.write(upload.buf, upload.currentSize);
+      esp32_ota_written += written;
+      if (written != upload.currentSize)
+      {
+        esp32_ota_failed = true;
+        ota_update_active = false;
+        esp32_ota_message = String("ESP32 OTA write failed: ") + Update.errorString();
+        Update.abort();
+        logLine(esp32_ota_message);
+      }
+      yield();
+    }
+  }
+  else if (upload.status == UPLOAD_FILE_END)
+  {
+    if (!esp32_ota_failed)
+    {
+      if (!Update.end(true))
+      {
+        esp32_ota_failed = true;
+        ota_update_active = false;
+        esp32_ota_message = String("ESP32 OTA end failed: ") + Update.errorString();
+        logLine(esp32_ota_message);
+      }
+      else
+      {
+        esp32_ota_message = String("ESP32 OTA upload received, bytes=") + esp32_ota_written;
+        logLine(esp32_ota_message);
+      }
+    }
+  }
+  else if (upload.status == UPLOAD_FILE_ABORTED)
+  {
+    esp32_ota_failed = true;
+    ota_update_active = false;
+    esp32_ota_message = "ESP32 OTA upload aborted";
+    Update.abort();
+    logLine(esp32_ota_message);
+  }
+}
+
+static void prepareEsp32OtaUpdate(const char *source)
+{
+  ota_update_active = true;
+  ota_last_logged_percent = -1;
+  telnet_client.stop();
+  if (upload_file)
+  {
+    upload_file.close();
+  }
+  if (job_file)
+  {
+    job_file.close();
+  }
+  if (isJobRunning())
+  {
+    stm32_uart.print("!\n");
+    stopGcodeJob(JOB_STOPPED, "stopped: ESP32 OTA");
+  }
+  setStatusRgb(26, 10, 0);
+  logLine(String(source) + " ESP32 OTA start");
 }
 
 static bool startGcodeJob(void)
@@ -1659,7 +2177,7 @@ static void gcodeJobTask(void)
   {
     if ((millis() - job_wait_started_ms) > STM32_OK_TIMEOUT_MS)
     {
-      Serial2.print("!\n");
+      stm32_uart.print("!\n");
       stopGcodeJob(JOB_ERROR, "timeout waiting for STM32 ok");
     }
   }
@@ -1726,8 +2244,8 @@ static bool isRunnableGcodeLine(const char *line)
 
 static void sendCurrentGcodeLine(void)
 {
-  Serial2.print(job_line_buf);
-  Serial2.print('\n');
+  stm32_uart.print(job_line_buf);
+  stm32_uart.print('\n');
   job_lines_sent++;
   job_wait_started_ms = millis();
   job_state = JOB_WAIT_OK;
@@ -1822,13 +2340,111 @@ static void handleStm32JobLine(const char *line)
   }
   else if (strncmp(line, "error", 5) == 0)
   {
-    Serial2.print("!\n");
+    stm32_uart.print("!\n");
     stopGcodeJob(JOB_ERROR, String("STM32 ") + line);
   }
 }
 
+static void setupStatusLed(void)
+{
+#if (HAS_RGB_STATUS_LED != 0)
+  pinMode(RGB_STATUS_LED_PIN, OUTPUT);
+  rgb_status_led_ready = true;
+  setStatusRgb(0, 0, 0);
+#else
+  rgb_status_led_ready = false;
+#endif
+}
+
+static void statusLedTask(void)
+{
+#if (HAS_RGB_STATUS_LED != 0)
+  uint32_t now_ms = millis();
+  uint8_t r = 0;
+  uint8_t g = 0;
+  uint8_t b = 0;
+  bool blink = false;
+  bool on_phase = true;
+
+  if (!rgb_status_led_ready || ((now_ms - last_rgb_status_ms) < 120UL))
+  {
+    return;
+  }
+  last_rgb_status_ms = now_ms;
+
+  if (firmware_message.indexOf("firmware update failed") >= 0)
+  {
+    r = 28;
+    blink = true;
+  }
+  else if ((firmware_message.indexOf("firmware sent ") >= 0) ||
+           (firmware_message.indexOf("STM32 bootloader") >= 0) ||
+           (firmware_message.indexOf("requested STM32 bootloader") >= 0))
+  {
+    r = 26;
+    g = 10;
+    blink = true;
+  }
+  else if (job_state == JOB_ERROR)
+  {
+    r = 28;
+    blink = true;
+  }
+  else if (isJobRunning())
+  {
+    b = 28;
+  }
+  else if (job_state == JOB_STOPPED)
+  {
+    r = 24;
+    g = 16;
+  }
+  else if (config_ap_active && (WiFi.status() != WL_CONNECTED))
+  {
+    r = 16;
+    b = 24;
+    blink = true;
+  }
+  else if (WiFi.status() == WL_CONNECTED)
+  {
+    g = 18;
+  }
+  else
+  {
+    r = 20;
+    g = 10;
+    blink = true;
+  }
+
+  if (blink)
+  {
+    on_phase = ((now_ms / 350UL) & 1UL) == 0UL;
+  }
+  setStatusRgb(on_phase ? r : 0, on_phase ? g : 0, on_phase ? b : 0);
+#endif
+}
+
+static void setStatusRgb(uint8_t r, uint8_t g, uint8_t b)
+{
+#if (HAS_RGB_STATUS_LED != 0)
+  if ((r == rgb_status_r) && (g == rgb_status_g) && (b == rgb_status_b))
+  {
+    return;
+  }
+  rgb_status_r = r;
+  rgb_status_g = g;
+  rgb_status_b = b;
+  rgbLedWrite(RGB_STATUS_LED_PIN, r, g, b);
+#else
+  (void)r;
+  (void)g;
+  (void)b;
+#endif
+}
+
 static void setupLcdUi(void)
 {
+#if (HAS_LCD_UI != 0)
   pinMode(LCD_BACKLIGHT_PIN, OUTPUT);
   digitalWrite(LCD_BACKLIGHT_PIN, HIGH);
   delay(20);
@@ -1840,10 +2456,15 @@ static void setupLcdUi(void)
   lcd_dirty = true;
   drawLcdUi(true);
   digitalWrite(LCD_BACKLIGHT_PIN, HIGH);
+#else
+  lcd_ready = false;
+  lcd_dirty = false;
+#endif
 }
 
 static void lcdUiTask(void)
 {
+#if (HAS_LCD_UI != 0)
   if (!lcd_ready)
   {
     return;
@@ -1851,8 +2472,10 @@ static void lcdUiTask(void)
 
   handleLcdTouch();
   drawLcdUi(false);
+#endif
 }
 
+#if (HAS_LCD_UI != 0)
 static void drawLcdUi(bool force)
 {
   uint32_t now_ms = millis();
@@ -2016,7 +2639,7 @@ static void runLcdAction(uint8_t action)
       started = startLastUploadedJob();
       break;
     case LCD_ACT_STOP:
-      Serial2.print("!\n");
+      stm32_uart.print("!\n");
       stopGcodeJob(JOB_STOPPED, "stopped from LCD");
       started = true;
       break;
@@ -2030,6 +2653,12 @@ static void runLcdAction(uint8_t action)
   }
   lcd_dirty = true;
 }
+#else
+static void drawLcdUi(bool force)
+{
+  (void)force;
+}
+#endif
 
 static bool runStm32FirmwareUpdate(void)
 {
@@ -2057,7 +2686,7 @@ static bool runStm32FirmwareUpdate(void)
     return false;
   }
 
-  Serial2.printf("FWUP %lu %08lX\n", (unsigned long)image_size, (unsigned long)image_crc);
+  stm32_uart.printf("FWUP %lu %08lX\n", (unsigned long)image_size, (unsigned long)image_crc);
   if (!waitStm32FirmwareContains("READY DATA", STM32_BOOTLOADER_LINE_TIMEOUT_MS))
   {
     return false;
@@ -2110,8 +2739,8 @@ static bool runStm32FirmwareUpdate(void)
       return false;
     }
 
-    Serial2.write(buf, read_len);
-    Serial2.flush();
+    stm32_uart.write(buf, read_len);
+    stm32_uart.flush();
     sent += len;
     firmware_message = String("firmware sent ") + sent + "/" + image_size;
     yield();
@@ -2192,9 +2821,9 @@ static bool waitStm32FirmwareLine(String &line, uint32_t timeout_ms)
 
   while ((millis() - started_ms) < timeout_ms)
   {
-    while (Serial2.available() > 0)
+    while (stm32_uart.available() > 0)
     {
-      uint8_t data = (uint8_t)Serial2.read();
+      uint8_t data = (uint8_t)stm32_uart.read();
 
       if ((data == '\r') || (data == '\n'))
       {
@@ -2263,12 +2892,12 @@ static bool waitStm32Bootloader(void)
   uint32_t last_ping_ms = 0;
 
   firmware_line_len = 0;
-  while (Serial2.available() > 0)
+  while (stm32_uart.available() > 0)
   {
-    (void)Serial2.read();
+    (void)stm32_uart.read();
   }
 
-  Serial2.print("B\n");
+  stm32_uart.print("B\n");
   firmware_message = "requested STM32 bootloader";
   logLine(firmware_message);
 
@@ -2278,7 +2907,7 @@ static bool waitStm32Bootloader(void)
     String line;
     if ((millis() - last_ping_ms) > 500UL)
     {
-      Serial2.print("PING\n");
+      stm32_uart.print("PING\n");
       last_ping_ms = millis();
     }
 

@@ -248,6 +248,10 @@ test_gcode/complex_laser_job_home_test.gcode
 test_gcode/laser_pwm_ramp.gcode
 test_gcode/dragon_180mm_lineart_s650.gcode
 test_gcode/ultra_complex_cyber_mandala_15mm_onoff.gcode
+test_gcode/viet_nam_flag_150x60_onoff.gcode
+test_gcode/hoang_dau_huyen_times_thin_80x60_onoff.gcode
+test_gcode/vietnam_map_sticker_80x60_onoff.gcode
+test_gcode/son_o_horn_times_thin_80x60_onoff.gcode
 ```
 
 File rong `dragon_180mm_lineart_s650.gcode`:
@@ -272,6 +276,46 @@ Laser: M3 S0 de ha Z/arm, cac net G1 dung S1000 F900, chi on/off
 Preview: test_gcode/ultra_complex_cyber_mandala_15mm_preview.png
 ```
 
+File `viet_nam_flag_150x60_onoff.gcode`:
+
+```text
+Kieu xuat: chu VIET NAM bang net don + co Viet Nam o ben phai
+Kich thuoc khac: khoang 144 x 53 mm, nam trong X90..234 Y110..163
+Laser: M3 S0 de ha Z/arm, cac net G1 dung S1000 F900, chi on/off
+Preview: test_gcode/viet_nam_flag_150x60_preview.png
+```
+
+File `hoang_dau_huyen_times_thin_80x60_onoff.gcode`:
+
+```text
+Kieu xuat: chu HOANG font Times New Roman-compatible, net outline mong, co dau huyen tren chu A
+Khung lam viec: 80 x 60 mm, can giua tai X164 Y142
+Vung khac thuc te: X128..200 Y133.229..150.771, khong phong to vua khit khung
+Laser: M3 S0 de ha Z/arm, cac net G1 dung S1000 F900, chi on/off
+Preview: test_gcode/hoang_dau_huyen_times_thin_80x60_preview.png
+```
+
+File `vietnam_map_sticker_80x60_onoff.gcode`:
+
+```text
+Kieu xuat: sticker ban do Viet Nam, sao 5 canh, hatch than ban do, chu VIETNAM nghieng phia duoi
+Nguon outline: Natural Earth 10m admin-0 countries, Vietnam
+Khung lam viec: 80 x 60 mm, can giua tai X164 Y142
+Vung khac thuc te: X133.401..186.866 Y113.756..170.958
+Laser: M3 S0 de ha Z/arm, cac net G1 dung S1000 F900, chi on/off
+Preview: test_gcode/vietnam_map_sticker_80x60_preview.png
+```
+
+File `son_o_horn_times_thin_80x60_onoff.gcode`:
+
+```text
+Kieu xuat: chu SON font Times New Roman-compatible, net outline mong, co dau moc tren chu O
+Khung lam viec: 80 x 60 mm, can giua tai X164 Y142
+Vung khac thuc te: X134..194 Y130.629..153.371
+Laser: M3 S0 de ha Z/arm, cac net G1 dung S1000 F900, chi on/off
+Preview: test_gcode/son_o_horn_times_thin_80x60_preview.png
+```
+
 Ghi chu file test nay:
 
 ```text
@@ -287,8 +331,8 @@ Ghi chu file test nay:
 ESP32 hien co web upload:
 
 ```text
-URL: http://192.168.10.140/
-Status plain text: http://192.168.10.140/status
+URL: http://192.168.1.140/
+Status plain text: http://192.168.1.140/status
 Stop job: nut Stop job tren web se gui ! xuong STM32
 Job %: hien tren web va LCD, tinh theo byte ESP32 da doc/gui trong file G-code hien tai
 ```
@@ -387,8 +431,8 @@ full-step: pulses_per_motor_rev = 200
 Ket noi ESP32 UART2 voi STM32 USART1:
 
 ```text
-ESP32 GPIO17 TX2 -> STM32 RXD / PB7
-ESP32 GPIO16 RX2 -> STM32 TXD / PB6
+ESP32-C6 GPIO16 TX -> STM32 RXD / PB7
+ESP32-C6 GPIO17 RX -> STM32 TXD / PB6
 ESP32 GND        -> STM32 GND
 Baud             = 115200 8N1
 ```
@@ -402,16 +446,36 @@ tools/esp32_uart_bridge
 Board ESP32 thuc te dang dung:
 
 ```text
-Diymore ESP32 WiFi + Bluetooth 2.8 inch LCD TFT 240x320 touch, ESP32-WROOM.
-Loai nay gan voi dong ESP32-2432S028R / "Cheap Yellow Display" nhung co nhieu bien the pinout.
-Dang dung UART2 ESP32:
-  GPIO17 TX2 -> STM32 PB7 RXD
-  GPIO16 RX2 -> STM32 PB6 TXD
+Da chuyen sang ESP32-C6 Super Mini, target gan voi ESP32-C6-DevKitM-1.
+Board C6 co LED RGB dia chi tren GPIO8.
+Dang dung UART ESP32:
+  GPIO16 TX -> STM32 PB7 RXD
+  GPIO17 RX -> STM32 PB6 TXD
 ```
 
-Ghi chu voi board man hinh:
+Ghi chu voi ESP32-C6 Super Mini:
 
 ```text
+- PlatformIO USB: pio run -e esp32c6_supermini_usb -t upload
+- PlatformIO OTA: pio run -e esp32c6_supermini_ota -t upload
+- RGB status LED GPIO8:
+  Green        = WiFi chinh connected, idle
+  Purple blink = AP cau hinh dang bat, chua connect WiFi chinh
+  Blue         = job dang chay
+  Orange blink = dang update firmware STM32 / bootloader
+  Red blink    = job/firmware error
+  Yellow       = job stopped
+- Target C6 khong dung LCD/touch. Endpoint /lcd-test se test RGB GPIO8.
+- GPIO8 la strapping pin cua ESP32-C6, chi dung LED onboard, khong keo ngoai lung tung khi reset.
+- Tren ESP32-C6, Arduino Serial2 la LP-UART va doi GPIO4/5. Firmware dung HardwareSerial(1) de giu UART STM32 tren GPIO16/17.
+- Nut BOOT tren C6 la GPIO9. Giu BOOT 3 giay khi firmware dang chay -> xoa WiFi config trong NVS, restart vao portal CNC-Laser-Setup.
+```
+
+Ghi chu voi board man hinh ESP32 cu:
+
+```text
+- Diymore ESP32 WiFi + Bluetooth 2.8 inch LCD TFT 240x320 touch, ESP32-WROOM.
+- Loai nay gan voi dong ESP32-2432S028R / "Cheap Yellow Display" nhung co nhieu bien the pinout.
 - Board co the dung LCD SPI 240x320 va touch dien tro, thuong la ILI9341 + XPT2046 nhung can xac nhan bang pinout/anh mat sau board.
 - Pinout tham khao CYD pho bien: TFT MISO=12, MOSI=13, SCLK=14, CS=15, DC=2, BL=21; touch IRQ=36, MOSI=32, MISO=39, CLK=25, CS=33.
 - RGB LED tren CYD pho bien dung GPIO4/16/17 active-low; vi GPIO16/17 dang lam UART STM32 nen khong dung RGB LED xanh/lam neu chua doi day UART.
@@ -421,40 +485,52 @@ Ghi chu voi board man hinh:
 ESP32 da co OTA qua WiFi:
 
 ```text
-IP tinh       = 192.168.10.140
-Telnet debug  = nc 192.168.10.140 23
-ESP32 OTA     = pio run -e esp32dev_ota -t upload
+IP tinh       = 192.168.1.140
+Telnet debug  = nc 192.168.1.140 23
+ESP32 OTA cu  = pio run -e esp32dev_ota -t upload
+ESP32-C6 USB  = pio run -e esp32c6_supermini_usb -t upload
+ESP32-C6 OTA  = pio run -e esp32c6_supermini_ota -t upload
+ESP32-C6 HTTP OTA page = http://192.168.1.140/esp32-ota
+ESP32-C6 HTTP OTA curl = curl -F 'file=@tools/esp32_uart_bridge/.pio/build/esp32c6_supermini_ota/firmware.bin;filename=firmware.bin' http://192.168.1.140/esp32-ota
 ```
 
 WiFi config/fallback AP:
 
 ```text
 Khi ESP32 connect duoc WiFi chinh:
-- Web console: http://192.168.10.140/
-- WiFi setup:  http://192.168.10.140/wifi
+- Web console: http://192.168.1.140/
+- WiFi setup:  http://192.168.1.140/wifi
 
 Khi ESP32 khong connect duoc WiFi chinh:
 - ESP32 tu phat AP: CNC-Laser-Setup
 - Mat khau AP: cnclaser
 - Vao trang cau hinh: http://192.168.4.1/wifi
 - Captive portal se day cac URL la ve /wifi khi AP dang bat.
+- AP fallback chi de cau hinh WiFi/IP, khong dung de upload G-code, OTA, telnet debug, jog, home, center hay chay job.
 
 Trang /wifi:
 - Quet va chon SSID WiFi ngoai.
 - Nhap mat khau.
 - Chon DHCP hoac static IP.
 - Luu vao NVS Preferences namespace "wifi", sau do ESP32 restart.
-- Nut Clear Saved WiFi xoa cau hinh da luu va quay ve default build: SSID ChatGPT, IP 192.168.10.140.
+- Nut Clear Saved WiFi xoa cau hinh da luu va restart vao setup portal.
+- Giu BOOT 3 giay tren ESP32-C6 cung xoa cau hinh da luu va restart vao setup portal.
 
 /status co them:
 - wifi_mode=sta / sta_ap / ap_config / offline
 - wifi_ssid=<ssid dang dung>
 - sta_ip=<ip khi da connect WiFi ngoai>
 - ap_ip=<ip AP fallback khi dang phat AP>
+- wifi_reset_button_gpio=9 tren ESP32-C6
+- wifi_force_setup=1 khi dang bi ep vao setup portal sau khi clear config
+- ota_active=1 khi ESP32 dang tu update firmware
+- esp32_ota=<trang thai OTA ESP32 gan nhat>
 
 Ghi chu:
-- Khi dang o AP fallback, ESP32 van thu connect lai WiFi da luu moi 60 s.
-- OTA qua WiFi nen dung khi ESP32 da connect vao WiFi chinh; neu mat WiFi chinh, vao AP fallback de sua cau hinh truoc.
+- Khi dang o AP fallback, ESP32 khong retry STA nen AP cau hinh on dinh hon.
+- Sau khi Save & Restart, ESP32 reboot va thu connect WiFi chinh.
+- OTA/telnet/web console chi dung khi ESP32 da connect vao WiFi chinh; neu mat WiFi chinh, vao AP fallback de sua cau hinh truoc.
+- Neu `pio ... esp32c6_supermini_ota -t upload` bi timeout giua chung, dung HTTP OTA `/esp32-ota` hoac curl nhu tren.
 ```
 
 ## STM32 bootloader / update qua ESP32
@@ -491,8 +567,8 @@ openocd -f interface/stlink.cfg -f target/stm32f4x.cfg -c "init; reset run; shut
 Sau khi da co bootloader, update app STM32 qua ESP32:
 
 ```text
-Web:  http://192.168.10.140/firmware
-Curl: curl -F 'file=@CNC_Laser_Fw/build/Debug/CNC_Laser_Fw.bin;filename=CNC_Laser_Fw.bin' http://192.168.10.140/fw-upload
+Web:  http://192.168.1.140/firmware
+Curl: curl -F 'file=@CNC_Laser_Fw/build/Debug/CNC_Laser_Fw.bin;filename=CNC_Laser_Fw.bin' http://192.168.1.140/fw-upload
 ```
 
 Can nho:
@@ -732,12 +808,54 @@ Hien tuong:
 - Sau do can them che do cau hinh WiFi de doi SSID/mat khau khong can sua code.
 
 Cach xu ly:
-- Mac dinh ESP32 connect WiFi ngoai SSID ChatGPT voi IP tinh 192.168.10.140.
+- Mac dinh ESP32 connect WiFi ngoai SSID ChatGPT voi IP tinh 192.168.1.140.
 - Neu connect fail thi bat fallback AP CNC-Laser-Setup / cnclaser.
 - Vao http://192.168.4.1/wifi de chon WiFi, mat khau, DHCP/static IP.
 - Cau hinh luu vao NVS, restart xong ESP32 dung WiFi moi.
-- Telnet debug khi o WiFi chinh: nc 192.168.10.140 23.
-- OTA target khi o WiFi chinh: pio run -e esp32dev_ota -t upload.
+- AP fallback chi dung lam config portal, khong chay web console/upload G-code/jog/OTA/telnet qua AP vi ket noi kem va de timeout.
+- Khi o AP config-only, cac endpoint may chay that se tra 503.
+- Giu BOOT tren ESP32-C6 trong 3 giay de xoa config WiFi hien tai va ep may vao setup portal.
+- Telnet debug khi o WiFi chinh: nc 192.168.1.140 23.
+- OTA target khi o WiFi chinh:
+  - ESP32 cu: pio run -e esp32dev_ota -t upload
+  - ESP32-C6 Super Mini: pio run -e esp32c6_supermini_ota -t upload
+  - ESP32-C6 fallback HTTP: http://192.168.1.140/esp32-ota
+```
+
+### ESP32-C6 PlatformIO espota bi timeout giua chung
+
+```text
+Hien tuong:
+- Ping toi 192.168.1.140 on dinh, 0% packet loss.
+- pio run -e esp32c6_supermini_ota -t upload authenticate OK voi password OTA.
+- Upload qua espota bi dut giua chung: co lan Broken pipe/Receive Failed, co lan timed out sau vai KB.
+
+Cach xu ly:
+- Van giu ArduinoOTA de sau nay thu lai khi mang/driver on hon.
+- Da them HTTP OTA qua WiFi chinh: http://192.168.1.140/esp32-ota.
+- Test thuc te HTTP OTA da upload du 1243344 byte firmware.bin, ESP32 restart va len lai IP 192.168.1.140.
+- Lenh test HTTP OTA:
+  curl -H 'Expect:' -F 'file=@tools/esp32_uart_bridge/.pio/build/esp32c6_supermini_ota/firmware.bin;filename=firmware.bin' http://192.168.1.140/esp32-ota
+```
+
+### ESP32-C6 UART voi STM32 bi nguoc TX/RX
+
+```text
+Hien tuong:
+- ESP32 web/telnet len binh thuong qua 192.168.1.140.
+- Gui `s` qua telnet bridge khong thay STM32 tra STATUS.
+- May tinh khong cam ESP/STM qua USB, chi test qua WiFi cua ESP32 va nguon chung.
+
+Cach xu ly:
+- Da dao mapping UART trong env ESP32-C6:
+  ESP32-C6 GPIO16 TX -> STM32 RXD / PB7
+  ESP32-C6 GPIO17 RX -> STM32 TXD / PB6
+- Sau khi nap HTTP OTA, /status bao:
+  stm32_uart_tx_gpio=16
+  stm32_uart_rx_gpio=17
+- Test qua telnet `s` da nhan:
+  STATUS limits L1=1 L2=1 L3=0 L4=1
+  POS X=0.000mm Y=0.000mm Zdown=0.000mm ...
 ```
 
 ### Telnet ESP32 bao Bridge busy
@@ -749,12 +867,12 @@ Hien tuong:
 
 Nguyen nhan thuc te lan nay:
 - Tren may local con process nc cu giu ket noi:
-  192.168.10.14:<port> -> 192.168.10.140:23
+  192.168.1.14:<port> -> 192.168.1.140:23
 
 Cach xu ly tam thoi:
 - Dung ss -tnp de tim process nc.
 - Kill process nc cu.
-- Mo lai nc 192.168.10.140 23 thi vao duoc.
+- Mo lai nc 192.168.1.140 23 thi vao duoc.
 
 Cach xu ly trong code ESP32:
 - Da sua bridge de telnet client moi se dong client cu va chiem quyen log.
@@ -1001,7 +1119,8 @@ https://marlinfw.org/docs/gcode/M003.html
 ## ESP32 web/LCD manual UI
 
 ```text
-ESP32 board dang dung: Diymore/ESP32 2.8 inch TFT 240x320 touch, gan voi nhom ESP32-2432S028R / E32R28T.
+ESP32 board hien tai: ESP32-C6 Super Mini, khong co LCD, co RGB LED GPIO8.
+ESP32 board LCD cu/legacy: Diymore/ESP32 2.8 inch TFT 240x320 touch, gan voi nhom ESP32-2432S028R / E32R28T.
 
 Pin LCD theo tai lieu:
 - TFT ILI9341: MISO GPIO12, MOSI GPIO13, SCLK GPIO14, CS GPIO15, DC GPIO2, RST share EN/-1
@@ -1010,13 +1129,16 @@ Pin LCD theo tai lieu:
 - RGB LED tren mot so board co the dung GPIO22/16/17 hoac GPIO4/16/17, khong dung GPIO16/17 vi dang lam UART2 voi STM32.
 
 ESP32 firmware hien tai:
-- Web console: http://192.168.10.140/
-- Status plain text: http://192.168.10.140/status
-- WiFi setup: http://192.168.10.140/wifi
-- STM32 firmware update: http://192.168.10.140/firmware
-- OTA ESP32: pio run -e esp32dev_ota -t upload
-- Telnet UART debug: nc 192.168.10.140 23
-- LCD test endpoint: POST http://192.168.10.140/lcd-test
+- Web console: http://192.168.1.140/
+- Status plain text: http://192.168.1.140/status
+- WiFi setup: http://192.168.1.140/wifi
+- STM32 firmware update: http://192.168.1.140/firmware
+- ESP32-C6 HTTP OTA: http://192.168.1.140/esp32-ota
+- OTA ESP32-C6: pio run -e esp32c6_supermini_ota -t upload
+- OTA ESP32 LCD cu: pio run -e esp32dev_ota -t upload
+- Telnet UART debug: nc 192.168.1.140 23
+- C6 RGB test endpoint: POST http://192.168.1.140/lcd-test
+- LCD legacy test endpoint: POST http://192.168.1.140/lcd-test
 
 Manual UI:
 - Upload + Start: upload file G-code va stream ngay.
